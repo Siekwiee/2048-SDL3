@@ -1,3 +1,0 @@
-C:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048/build/CMakeFiles/game2048.dir
-C:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048/build/CMakeFiles/ZERO_CHECK.dir
