@@ -1,0 +1,10 @@
+^C:\USERS\BRUCE\DOCUMENTS\DEV\AA_CPP\SDL\2048\BUILD\CMAKEFILES\512E04A16EB1D78E194139065BE21FD8\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048 -BC:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/bruce/Documents/DEV/AA_CPP/SDL/2048/build/2048.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
