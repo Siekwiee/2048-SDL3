@@ -1,3 +1,5 @@
+#include "SDL3/SDL_events.h"
+#include "SDL3/SDL_keycode.h"
 #include <utility>
 #include <vector>
 #include <algorithm>  // for std::find_if, std::count_if
@@ -24,8 +26,23 @@ const int GRID_COLS = 4;
 const int GRID_ROWS = 4;
 const float TILE_PADDING = 5.0f;
 
-// Text scaling factor - makes text 3x larger (8px * 3 = 24px)
-const float TEXT_SCALE = 3.0f;
+// Text scaling factor - makes text 2.5x larger (8px * 2.5 = 20px)
+// Reduced from 3.0 to prevent overlap
+const float TEXT_SCALE = 2.5f;
+
+// Calculate the width of text when rendered with scaling
+// This helps position text dynamically to prevent overlap
+float GetScaledTextWidth(const char* text, float scale = TEXT_SCALE) {
+    // SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE is 8 pixels per character
+    // With scaling, each character is 8 * scale pixels wide
+    return (float)(strlen(text) * 8 * scale);
+}
+
+// Calculate the height of text when rendered with scaling
+float GetScaledTextHeight(float scale = TEXT_SCALE) {
+    // SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE is 8 pixels tall
+    return 8.0f * scale;
+}
 
 // Helper function to render scaled text
 // This temporarily scales the renderer, draws text, then restores the scale
@@ -108,11 +125,9 @@ public:
         // Calculate text position (centered on tile)
         SDL_FRect tileRect = getRect(tileWidth, tileHeight);
         
-        // SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE is 8 pixels
-        // With scaling, each character will be 8 * TEXT_SCALE pixels
-        float scaledCharWidth = 8.0f * TEXT_SCALE;
-        float textWidth = (float)(strlen(text) * scaledCharWidth);
-        float textHeight = 8.0f * TEXT_SCALE;  // Scaled character height
+        // Calculate text dimensions using helper function
+        float textWidth = GetScaledTextWidth(text);
+        float textHeight = GetScaledTextHeight();
         
         // Center the text
         float textX = tileRect.x + (tileRect.w - textWidth) / 2.0f;
@@ -237,6 +252,234 @@ public:
         return false;
     }
     
+    // Restart the grid - clear all tiles
+    void restart() {
+        for (Tile& tile : tiles) {
+            tile.value = 0;
+        }
+    }
+    
+    // Direction enum for tile movement
+    enum Direction {
+        UP,
+        DOWN,
+        LEFT,
+        RIGHT
+    };
+    
+    // Move and merge tiles in the specified direction
+    // Returns true if any tiles moved or merged, false otherwise
+    // mergeScore is updated with the total value of merged tiles
+    bool orderTilesAndMerge(Direction dir, int& mergeScore) {
+        mergeScore = 0;
+        
+        // Save original state to compare later
+        std::vector<Tile> originalTiles = tiles;
+        std::vector<Tile> newTiles = tiles;
+        bool anyChange = false;
+        
+        // Process each row or column depending on direction
+        if (dir == UP || dir == DOWN) {
+            // Process each column
+            for (int col = 0; col < cols; col++) {
+                // Collect non-empty tiles with their original row positions
+                std::vector<std::pair<int, int>> columnTiles; // (row, value)
+                for (int row = 0; row < rows; row++) {
+                    int idx = getIndex(row, col);
+                    if (!originalTiles[idx].isEmpty()) {
+                        columnTiles.push_back({row, originalTiles[idx].value});
+                    }
+                }
+                
+                if (columnTiles.empty()) continue;
+                
+                // For DOWN, we need to process from bottom to top for merging
+                // So we reverse the order, merge, then reverse back
+                std::vector<std::pair<int, int>> workingTiles = columnTiles;
+                bool wasReversed = false;
+                if (dir == DOWN) {
+                    std::reverse(workingTiles.begin(), workingTiles.end());
+                    wasReversed = true;
+                }
+                
+                // Merge adjacent tiles with same value
+                std::vector<int> mergedValues; // Just the values after merging
+                for (size_t i = 0; i < workingTiles.size(); i++) {
+                    if (i < workingTiles.size() - 1 && 
+                        workingTiles[i].second == workingTiles[i + 1].second) {
+                        // Merge tiles
+                        int mergedValue = workingTiles[i].second * 2;
+                        mergedValues.push_back(mergedValue);
+                        mergeScore += mergedValue;
+                        i++; // Skip next tile as it's been merged
+                    } else {
+                        // Keep tile as is
+                        mergedValues.push_back(workingTiles[i].second);
+                    }
+                }
+                
+                // Reverse back to get correct order for placement
+                if (wasReversed) {
+                    std::reverse(mergedValues.begin(), mergedValues.end());
+                }
+                
+                // Check if this column actually needs to change
+                // Build what the final column should look like
+                std::vector<int> finalColumn(rows, 0);
+                for (size_t i = 0; i < mergedValues.size(); i++) {
+                    int finalRow;
+                    if (dir == UP) {
+                        finalRow = (int)i;  // Place from top (0, 1, 2, ...)
+                    } else { // DOWN
+                        finalRow = rows - 1 - (int)i;  // Place from bottom (3, 2, 1, ...)
+                    }
+                    finalColumn[finalRow] = mergedValues[i];
+                }
+                
+                // Compare with original column - check if anything actually changed
+                bool columnChanged = false;
+                for (int row = 0; row < rows; row++) {
+                    int idx = getIndex(row, col);
+                    if (finalColumn[row] != originalTiles[idx].value) {
+                        columnChanged = true;
+                        break;
+                    }
+                }
+                
+                // Only modify this column if it changed
+                if (columnChanged) {
+                    anyChange = true;
+                    // Clear this column first
+                    for (int row = 0; row < rows; row++) {
+                        int idx = getIndex(row, col);
+                        newTiles[idx].value = 0;
+                    }
+                    
+                    // Place merged tiles at the edge (top for UP, bottom for DOWN)
+                    for (size_t i = 0; i < mergedValues.size(); i++) {
+                        int finalRow;
+                        size_t valueIndex;
+                        if (dir == UP) {
+                            finalRow = (int)i;  // Place from top (0, 1, 2, ...)
+                            valueIndex = i;
+                        } else { // DOWN
+                            finalRow = rows - 1 - (int)i;  // Place from bottom (3, 2, 1, ...)
+                            valueIndex = mergedValues.size() - 1 - i;  // Reverse order for values
+                        }
+                        int targetIdx = getIndex(finalRow, col);
+                        newTiles[targetIdx].value = mergedValues[valueIndex];
+                        newTiles[targetIdx].row = finalRow;
+                        newTiles[targetIdx].col = col;
+                    }
+                }
+                // If column didn't change, leave newTiles[col] as is (already copied from original)
+            }
+        } else { // LEFT or RIGHT
+            // Process each row
+            for (int row = 0; row < rows; row++) {
+                // Collect non-empty tiles with their original column positions
+                std::vector<std::pair<int, int>> rowTiles; // (col, value)
+                for (int col = 0; col < cols; col++) {
+                    int idx = getIndex(row, col);
+                    if (!originalTiles[idx].isEmpty()) {
+                        rowTiles.push_back({col, originalTiles[idx].value});
+                    }
+                }
+                
+                if (rowTiles.empty()) continue;
+                
+                // For RIGHT, we need to process from right to left for merging
+                // So we reverse the order, merge, then reverse back
+                std::vector<std::pair<int, int>> workingTiles = rowTiles;
+                bool wasReversed = false;
+                if (dir == RIGHT) {
+                    std::reverse(workingTiles.begin(), workingTiles.end());
+                    wasReversed = true;
+                }
+                
+                // Merge adjacent tiles with same value
+                std::vector<int> mergedValues; // Just the values after merging
+                for (size_t i = 0; i < workingTiles.size(); i++) {
+                    if (i < workingTiles.size() - 1 && 
+                        workingTiles[i].second == workingTiles[i + 1].second) {
+                        // Merge tiles
+                        int mergedValue = workingTiles[i].second * 2;
+                        mergedValues.push_back(mergedValue);
+                        mergeScore += mergedValue;
+                        i++; // Skip next tile as it's been merged
+                    } else {
+                        // Keep tile as is
+                        mergedValues.push_back(workingTiles[i].second);
+                    }
+                }
+                
+                // Reverse back to get correct order for placement
+                if (wasReversed) {
+                    std::reverse(mergedValues.begin(), mergedValues.end());
+                }
+                
+                // Check if this row actually needs to change
+                // Build what the final row should look like
+                std::vector<int> finalRow(cols, 0);
+                for (size_t i = 0; i < mergedValues.size(); i++) {
+                    int finalCol;
+                    if (dir == LEFT) {
+                        finalCol = (int)i;  // Place from left (0, 1, 2, ...)
+                    } else { // RIGHT
+                        finalCol = cols - 1 - (int)i;  // Place from right (3, 2, 1, ...)
+                    }
+                    finalRow[finalCol] = mergedValues[i];
+                }
+                
+                // Compare with original row - check if anything actually changed
+                bool rowChanged = false;
+                for (int col = 0; col < cols; col++) {
+                    int idx = getIndex(row, col);
+                    if (finalRow[col] != originalTiles[idx].value) {
+                        rowChanged = true;
+                        break;
+                    }
+                }
+                
+                // Only modify this row if it changed
+                if (rowChanged) {
+                    anyChange = true;
+                    // Clear this row first
+                    for (int col = 0; col < cols; col++) {
+                        int idx = getIndex(row, col);
+                        newTiles[idx].value = 0;
+                    }
+                    
+                    // Place merged tiles at the edge (left for LEFT, right for RIGHT)
+                    for (size_t i = 0; i < mergedValues.size(); i++) {
+                        int finalCol;
+                        size_t valueIndex;
+                        if (dir == LEFT) {
+                            finalCol = (int)i;  // Place from left (0, 1, 2, ...)
+                            valueIndex = i;
+                        } else { // RIGHT
+                            finalCol = cols - 1 - (int)i;  // Place from right (3, 2, 1, ...)
+                            valueIndex = mergedValues.size() - 1 - i;  // Reverse order for values
+                        }
+                        int targetIdx = getIndex(row, finalCol);
+                        newTiles[targetIdx].value = mergedValues[valueIndex];
+                        newTiles[targetIdx].row = row;
+                        newTiles[targetIdx].col = finalCol;
+                    }
+                }
+                // If row didn't change, leave newTiles[row] as is (already copied from original)
+            }
+        }
+        
+        // Only update if something changed
+        if (anyChange) {
+            tiles = newTiles;
+            return true;
+        }
+        
+        return false;
+    }
+
     // Iterate over all tiles - useful for drawing
     // This allows range-based for loops: for (const Tile& tile : grid) { ... }
     auto begin() const { return tiles.begin(); }
@@ -292,6 +535,8 @@ void InitGame(AppState *as)
 void UpdateGame(AppState *as)
 {
     // Game update logic will go here (movement, merging, etc.)
+    // update scores
+    
 }
 
 void DrawGame(AppState *as)
@@ -346,25 +591,30 @@ void DrawGame(AppState *as)
     // Step 5: Draw score and high score below the grid
     const GameContext& ctx = as->game_ctx;
     float scoreY = GRID_HEIGHT + 20.0f;  // 20px below the grid
+    float labelX = 20.0f;  // Left margin for labels
+    float spacing = 15.0f;  // Space between label and value
     
     // Draw "Score:" label (using scaled text)
     SDL_SetRenderDrawColor(renderer, 119, 110, 101, 255);  // Dark gray
-    RenderScaledText(renderer, 20.0f, scoreY, "Score:");
+    RenderScaledText(renderer, labelX, scoreY, "Score:");
     
-    // Draw score value
+    // Calculate position for score value based on actual text width
+    float scoreLabelWidth = GetScaledTextWidth("Score:");
     char scoreText[32];
     snprintf(scoreText, sizeof(scoreText), "%d", ctx.score);
-    float scoreValueX = 120.0f;  // Position after "Score:" label (accounting for scaled text)
+    float scoreValueX = labelX + scoreLabelWidth + spacing;  // Dynamic positioning
     RenderScaledText(renderer, scoreValueX, scoreY, scoreText);
     
     // Draw "High Score:" label
-    float highScoreY = scoreY + 30.0f;  // 30px below score (accounting for scaled text)
-    RenderScaledText(renderer, 20.0f, highScoreY, "High Score:");
+    float textHeight = GetScaledTextHeight();
+    float highScoreY = scoreY + textHeight + 10.0f;  // Dynamic spacing based on text height
+    RenderScaledText(renderer, labelX, highScoreY, "High Score:");
     
-    // Draw high score value
+    // Calculate position for high score value based on actual text width
+    float highScoreLabelWidth = GetScaledTextWidth("High Score:");
     char highScoreText[32];
     snprintf(highScoreText, sizeof(highScoreText), "%d", ctx.high_score);
-    float highScoreValueX = 200.0f;  // Position after "High Score:" label
+    float highScoreValueX = labelX + highScoreLabelWidth + spacing;  // Dynamic positioning
     RenderScaledText(renderer, highScoreValueX, highScoreY, highScoreText);
     
     // Step 6: Present the rendered frame to the screen
@@ -430,12 +680,70 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
             return SDL_APP_SUCCESS;  /* end the program, reporting success to the OS. */
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
             return SDL_APP_SUCCESS;  /* end the program, reporting success to the OS. */
+        case SDL_EVENT_KEY_DOWN: {
+            // Handle arrow key presses for tile movement
+            AppState *as = (AppState *)appstate;
+            SDL_Keycode key = event->key.key;
+            
+            Grid::Direction dir;
+            bool validKey = false;
+            
+            switch(key) {
+            case SDLK_UP:
+                dir = Grid::UP;
+                validKey = true;
+                break;
+            case SDLK_DOWN:
+                dir = Grid::DOWN;
+                validKey = true;
+                break;
+            case SDLK_LEFT: 
+                dir = Grid::LEFT;
+                validKey = true;
+                break;
+            case SDLK_RIGHT: 
+                dir = Grid::RIGHT;
+                validKey = true;
+                break;
+            case SDLK_R:
+                // Restart the game
+                as->game_ctx.grid.restart();
+                as->game_ctx.score = 0;
+                // Keep high_score - don't reset it
+                InitGame(as);  // Spawn initial tiles
+                break;
+            default:
+                // Unknown key - do nothing, don't log every key press
+                break;
+            }
+            
+            if (validKey) {
+                int mergeScore = 0;
+                bool moved = as->game_ctx.grid.orderTilesAndMerge(dir, mergeScore);
+                
+                if (moved) {
+                    // Update score with merge points
+                    as->game_ctx.score += mergeScore;
+                    
+                    // Update high score if needed
+                    if (as->game_ctx.score > as->game_ctx.high_score) {
+                        as->game_ctx.high_score = as->game_ctx.score;
+                    }
+                    
+                    // Spawn a new tile (90% chance of 2, 10% chance of 4)
+                    int newTileValue = (rand() % 10 == 0) ? 4 : 2;
+                    as->game_ctx.grid.spawnRandomTile(newTileValue);
+                }
+            }
+            break;
+        }
         default:
             break;
     }
     return SDL_APP_CONTINUE;  /* carry on with the program! */
 }
-void SDL_AppQuit(void *appstate, SDL_AppResult result){
+void SDL_AppQuit(void *appstate, SDL_AppResult result)
+{
     if (appstate != NULL) {
         AppState *as = (AppState *)appstate;
         if (as->renderer) {
